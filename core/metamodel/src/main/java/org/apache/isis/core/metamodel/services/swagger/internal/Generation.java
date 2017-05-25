@@ -20,9 +20,12 @@ package org.apache.isis.core.metamodel.services.swagger.internal;
 
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 
 import javax.annotation.Nullable;
 
@@ -30,8 +33,10 @@ import com.google.common.base.Function;
 import com.google.common.base.Joiner;
 import com.google.common.base.Strings;
 import com.google.common.collect.FluentIterable;
+import com.google.common.collect.ImmutableBiMap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
+import com.google.common.collect.Maps;
 import com.google.common.collect.Ordering;
 import com.google.common.collect.Sets;
 
@@ -45,14 +50,15 @@ import org.apache.isis.core.metamodel.facets.object.mixin.MixinFacet;
 import org.apache.isis.core.metamodel.facets.object.objectspecid.ObjectSpecIdFacet;
 import org.apache.isis.core.metamodel.services.ServiceUtil;
 import org.apache.isis.core.metamodel.spec.ObjectSpecification;
-import org.apache.isis.core.metamodel.specloader.SpecificationLoader;
 import org.apache.isis.core.metamodel.spec.feature.Contributed;
 import org.apache.isis.core.metamodel.spec.feature.ObjectAction;
 import org.apache.isis.core.metamodel.spec.feature.ObjectActionParameter;
 import org.apache.isis.core.metamodel.spec.feature.OneToManyAssociation;
 import org.apache.isis.core.metamodel.spec.feature.OneToOneAssociation;
+import org.apache.isis.core.metamodel.specloader.SpecificationLoader;
 
 import io.swagger.models.Info;
+import io.swagger.models.Model;
 import io.swagger.models.ModelImpl;
 import io.swagger.models.Operation;
 import io.swagger.models.Path;
@@ -126,6 +132,69 @@ class Generation {
         appendDefinitionsForOrphanedReferences();
 
         return swagger;
+        //return reorder(swagger);
+    }
+
+    private Swagger reorder(final Swagger swagger) {
+
+        final Swagger swaggerCopy = new Swagger();
+
+        swaggerCopy.basePath(swagger.getBasePath());
+        swaggerCopy.info(swagger.getInfo());
+
+        // copy over definitions.
+        final Map<String, Model> definitions = swagger.getDefinitions();
+        final TreeSet<String> orderedDefinitionKeys = orderedCaseInsensitive(definitions.keySet());
+        for (String definitionKey : orderedDefinitionKeys) {
+            final Model model = definitions.get(definitionKey);
+            swaggerCopy.addDefinition(definitionKey, model);
+        }
+
+        LinkedHashMap<String,Path> orderedPaths = pathsOrderedByTag(swagger);
+        for (String pathKey: orderedPaths.keySet()) {
+            swaggerCopy.path(pathKey, swagger.getPath(pathKey));
+        }
+
+        return swaggerCopy;
+    }
+
+    private LinkedHashMap<String,Path> pathsOrderedByTag(final Swagger swagger) {
+        final Map<String, Path> pathsByKey = swagger.getPaths();
+        ImmutableBiMap<Path, String> keysByPath = ImmutableBiMap.copyOf(pathsByKey).inverse();
+
+        LinkedHashMap<String,Path> reorderedPathsByKey = Maps.newLinkedHashMap();
+
+        final TreeSet<Path> reorderedPaths = Sets.newTreeSet(Ordering.natural().nullsFirst().onResultOf(new Function<Path, String>() {
+            @Nullable @Override
+            public String apply(@Nullable final Path input) {
+                final List<Operation> operations = input.getOperations();
+                if (operations.isEmpty()) {
+                    return null;
+                }
+                final List<String> tags = operations.get(0).getTags();
+                return tags.isEmpty() ? null : tags.get(0);
+            }
+        }));
+        reorderedPaths.addAll(pathsByKey.values());
+
+        for (Path path : reorderedPaths) {
+            final String pathKey = keysByPath.get(path);
+            reorderedPathsByKey.put(pathKey, path);
+        }
+
+        return reorderedPathsByKey;
+    }
+
+    private static TreeSet<String> orderedCaseInsensitive(final Set<String> c) {
+        final TreeSet<String> orderedKeys = Sets.newTreeSet(Ordering.natural().onResultOf(
+                new Function<String, String>() {
+                    @Nullable @Override
+                    public String apply(@Nullable final String input) {
+                        return input.toLowerCase();
+                    }
+                }));
+        orderedKeys.addAll(c);
+        return orderedKeys;
     }
 
     void appendServicePathsAndDefinitions() {
